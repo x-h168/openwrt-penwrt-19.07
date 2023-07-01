@@ -1,164 +1,710 @@
-#
-# Copyright (C) 2006-2015 OpenWrt.org
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
+#!/bin/sh
 
-ifdef CONFIG_STRIP_KERNEL_EXPORTS
-  KERNEL_MAKEOPTS += \
-	EXTRA_LDSFLAGS="-I$(KERNEL_BUILD_DIR) -include symtab.h"
-endif
+. /lib/functions.sh
+. /lib/functions/uci-defaults.sh
+. /lib/functions/system.sh
 
-INITRAMFS_EXTRA_FILES ?= $(GENERIC_PLATFORM_DIR)/image/initramfs-base-files.txt
-
-ifneq (,$(KERNEL_CC))
-  KERNEL_MAKEOPTS += CC="$(KERNEL_CC)"
-endif
-
-export HOST_EXTRACFLAGS=-I$(STAGING_DIR_HOST)/include
-
-# defined in quilt.mk
-Kernel/Patch:=$(Kernel/Patch/Default)
-
-ifneq (,$(findstring .xz,$(LINUX_SOURCE)))
-  LINUX_CAT:=xzcat
-else
-  LINUX_CAT:=zcat
-endif
-
-ifeq ($(strip $(CONFIG_EXTERNAL_KERNEL_TREE)),"")
-  ifeq ($(strip $(CONFIG_KERNEL_GIT_CLONE_URI)),"")
-    define Kernel/Prepare/Default
-	$(LINUX_CAT) $(DL_DIR)/$(LINUX_SOURCE) | $(TAR) -C $(KERNEL_BUILD_DIR) $(TAR_OPTIONS)
-	$(Kernel/Patch)
-	$(if $(QUILT),touch $(LINUX_DIR)/.quilt_used)
-    endef
-  else
-    define Kernel/Prepare/Default
-	$(LINUX_CAT) $(DL_DIR)/$(LINUX_SOURCE) | $(TAR) -C $(KERNEL_BUILD_DIR) $(TAR_OPTIONS)
-    endef
-  endif
-else
-  define Kernel/Prepare/Default
-	mkdir -p $(KERNEL_BUILD_DIR)
-	if [ -d $(LINUX_DIR) ]; then \
-		rmdir $(LINUX_DIR); \
+ramips_setup_rt3x5x_vlans()
+{
+	if [ ! -x /sbin/swconfig ]; then
+		# legacy default
+		ucidef_set_interfaces_lan_wan "eth0.1" "eth0.2"
+		return
 	fi
-	ln -s $(CONFIG_EXTERNAL_KERNEL_TREE) $(LINUX_DIR)
-  endef
-endif
+	local wanports=""
+	local lanports=""
+	for port in 5 4 3 2 1 0; do
+		if [ `swconfig dev rt305x port $port get disable` = "1" ]; then
+			continue
+		fi
+		if [ `swconfig dev rt305x port $port get lan` = "0" ]; then
+			wanports="$port:wan $wanports"
+		else
+			lanports="$port:lan $lanports"
+		fi
+	done
+	ucidef_add_switch "rt305x" $lanports $wanports "6t@eth0"
+}
 
-ifeq ($(CONFIG_TARGET_ROOTFS_INITRAMFS),y)
-  ifeq ($(strip $(CONFIG_EXTERNAL_CPIO)),"")
-    define Kernel/SetInitramfs/PreConfigure
-	grep -v -e INITRAMFS -e CONFIG_RD_ -e CONFIG_BLK_DEV_INITRD $(LINUX_DIR)/.config.old > $(LINUX_DIR)/.config
-	echo 'CONFIG_BLK_DEV_INITRD=y' >> $(LINUX_DIR)/.config
-	echo 'CONFIG_INITRAMFS_SOURCE="$(strip $(TARGET_DIR) $(INITRAMFS_EXTRA_FILES))"' >> $(LINUX_DIR)/.config
-    endef
-  else
-    define Kernel/SetInitramfs/PreConfigure
-	grep -v INITRAMFS $(LINUX_DIR)/.config.old > $(LINUX_DIR)/.config
-	echo 'CONFIG_INITRAMFS_SOURCE="$(call qstrip,$(CONFIG_EXTERNAL_CPIO))"' >> $(LINUX_DIR)/.config
-    endef
-  endif
+ramips_setup_interfaces()
+{
+	local board="$1"
 
-  define Kernel/SetInitramfs
-	rm -f $(LINUX_DIR)/.config.prev
-	mv $(LINUX_DIR)/.config $(LINUX_DIR)/.config.old
-	$(call Kernel/SetInitramfs/PreConfigure)
-	echo 'CONFIG_INITRAMFS_ROOT_UID=$(shell id -u)' >> $(LINUX_DIR)/.config
-	echo 'CONFIG_INITRAMFS_ROOT_GID=$(shell id -g)' >> $(LINUX_DIR)/.config
-	echo "$(if $(CONFIG_TARGET_INITRAMFS_FORCE),CONFIG_INITRAMFS_FORCE=y,# CONFIG_INITRAMFS_FORCE is not set)" >> $(LINUX_DIR)/.config
-	echo "$(if $(CONFIG_TARGET_INITRAMFS_COMPRESSION_NONE),CONFIG_INITRAMFS_COMPRESSION_NONE=y,# CONFIG_INITRAMFS_COMPRESSION_NONE is not set)" >> $(LINUX_DIR)/.config
-	echo -e "$(if $(CONFIG_TARGET_INITRAMFS_COMPRESSION_GZIP),CONFIG_INITRAMFS_COMPRESSION_GZIP=y\nCONFIG_RD_GZIP=y,# CONFIG_INITRAMFS_COMPRESSION_GZIP is not set\n# CONFIG_RD_GZIP is not set)" >> $(LINUX_DIR)/.config
-	echo -e "$(if $(CONFIG_TARGET_INITRAMFS_COMPRESSION_BZIP2),CONFIG_INITRAMFS_COMPRESSION_BZIP2=y\nCONFIG_RD_BZIP2=y,# CONFIG_INITRAMFS_COMPRESSION_BZIP2 is not set\n# CONFIG_RD_BZIP2 is not set)" >> $(LINUX_DIR)/.config
-	echo -e "$(if $(CONFIG_TARGET_INITRAMFS_COMPRESSION_LZMA),CONFIG_INITRAMFS_COMPRESSION_LZMA=y\nCONFIG_RD_LZMA=y,# CONFIG_INITRAMFS_COMPRESSION_LZMA is not set\n# CONFIG_RD_LZMA is not set)" >> $(LINUX_DIR)/.config
-	echo -e "$(if $(CONFIG_TARGET_INITRAMFS_COMPRESSION_LZO),CONFIG_INITRAMFS_COMPRESSION_LZO=y\nCONFIG_RD_LZO=y,# CONFIG_INITRAMFS_COMPRESSION_LZO is not set\n# CONFIG_RD_LZO is not set)" >> $(LINUX_DIR)/.config
-	echo -e "$(if $(CONFIG_TARGET_INITRAMFS_COMPRESSION_XZ),CONFIG_INITRAMFS_COMPRESSION_XZ=y\nCONFIG_RD_XZ=y,# CONFIG_INITRAMFS_COMPRESSION_XZ is not set\n# CONFIG_RD_XZ is not set)" >> $(LINUX_DIR)/.config
-	echo -e "$(if $(CONFIG_TARGET_INITRAMFS_COMPRESSION_LZ4),CONFIG_INITRAMFS_COMPRESSION_LZ4=y\nCONFIG_RD_LZ4=y,# CONFIG_INITRAMFS_COMPRESSION_LZ4 is not set\n# CONFIG_RD_LZ4 is not set)" >> $(LINUX_DIR)/.config
-  endef
-else
-endif
+	case $board in
+	11acnas|\
+	d-team,newifi-d2|\
+	dir-615-h1|\
+	w2914nsv2|\
+	zbt-we2026)
+		ucidef_add_switch "switch0" \
+			"0:lan:4" "1:lan:3" "2:lan:2" "3:lan:1" "4:wan:5" "6@eth0"
+		;;
+	3g150b|\
+	3g300m|\
+	a5-v11|\
+	all0256n-4M|\
+	all0256n-8M|\
+	all5002|\
+	all5003|\
+	bocco|\
+	broadway|\
+	dcs-930|\
+	dcs-930l-b1|\
+	ht-tm02|\
+	kimax,u35wf|\
+	linkits7688 | \
+	m2m|\
+	microwrt|\
+	mikrotik,rbm11g|\
+	mpr-a2|\
+	ncs601w|\
+	omega2 | \
+	omega2p | \
+	timecloud|\
+	tplink,tl-wa801nd-v5|\
+	w150m|\
+	widora,neo-16m|\
+	widora,neo-32m|\
+	wnce2001|\
+	zbt-cpe102|\
+	zorlik,zl5900v2|\
+	zte-q7)
+		ucidef_add_switch "switch0"
+		ucidef_add_switch_attr "switch0" "enable" "false"
+		ucidef_set_interface_lan "eth0"
+		;;
+	mlw221|\
+	mr-102n)
+		ucidef_set_interface_lan "eth0.2"
+		;;
+	3g-6200n|\
+	ai-br100|\
+	alfa-network,ac1200rm|\
+	mediatek,ap-mt7621a-v60|\
+	xzwifi,creativebox-v1|\
+	d240|\
+	db-wrt01|\
+	dir-300-b7|\
+	dir-320-b1|\
+	dir-610-a1|\
+	dir-810l|\
+	dlink,dwr-116-a1|\
+	dlink,dwr-921-c1|\
+	dlink,dwr-922-e2|\
+	ew1200|\
+	firewrt|\
+	hc5661a|\
+	hlk-rm04|\
+	k2p|\
+	kn|\
+	kn_rc|\
+	mac1200rv2|\
+	miwifi-nano|\
+	mt7621|\
+	mt7628|\
+	mtc,wr1201|\
+	mzk-750dhp|\
+	mzk-w300nh2|\
+	nixcore-x1-8M|\
+	nixcore-x1-16M|\
+	oy-0001|\
+	pbr-m1|\
+	psg1208|\
+	psg1218a|\
+	rt-n12p|\
+	sap-g3200u3|\
+	sk-wb8|\
+	telco-electronics,x1|\
+	totolink,lr1200|\
+	unielec,u7621-06-256m-16m|\
+	unielec,u7621-06-512m-64m|\
+	vr500|\
+	wavlink,wl-wn570ha1|\
+	wavlink,wl-wn575a3|\
+	wf-2881|\
+	whr-g300n|\
+	mqmaker,witi-256m|\
+	mqmaker,witi-512m|\
+	youku-yk1|\
+	youku,yk-l2|\
+	zbt-ape522ii|\
+	zbt-we1326|\
+	zbtlink,zbt-we826-e|\
+	zbtlink,zbt-we3526|\
+	zbt-we826-16M|\
+	zbt-we826-32M|\
+	zbt-wg2626|\
+	zbt-wg3526-16M|\
+	zbt-wg3526-32M|\
+	zbt-wr8305rt)
+		ucidef_add_switch "switch0" \
+			"0:lan" "1:lan" "2:lan" "3:lan" "4:wan" "6@eth0"
+		;;
+	gehua,ghl-r-001)
+		ucidef_add_switch "switch0" \
+			"0:lan" "1:lan" "2:lan" "4:wan" "6@eth0"
+		;;
+	alfa-network,awusfree1|\
+	alfa-network,tube-e4g|\
+	cs-qr10|\
+	d105|\
+	dlink,dap-1522-a1|\
+	dch-m225|\
+	ex2700|\
+	ex3700|\
+	hpm|\
+	mzk-ex300np|\
+	mzk-ex750np|\
+	na930|\
+	pbr-d1|\
+	ravpower,wd03|\
+	tama,w06|\
+	tplink,tl-mr3020-v3|\
+	tplink,tl-wr802n-v4|\
+	u25awf-h1|\
+	wli-tx4-ag300n|\
+	wmdr-143n|\
+	wmr-300|\
+	wn3000rpv3|\
+	wrh-300cr)
+		ucidef_set_interface_lan "eth0"
+		;;
+	alfa-network,quad-e4g|\
+	netgear,r6120|\
+	r6220|\
+	netgear,r6350|\
+	wndr3700v5)
+		ucidef_add_switch "switch0" \
+			"0:lan:4" "1:lan:3" "2:lan:2" "3:lan:1" "4:wan" "6@eth0"
+		;;
+	alfa-network,r36m-e4g|\
+	wcr-1166ds)
+		ucidef_add_switch "switch0" \
+			"3:lan" "4:wan" "6@eth0"
+		;;
+	dlink,dwr-118-a1)
+		ucidef_add_switch "switch0" \
+			"1:lan:2" "2:lan:3" "3:lan:1" "4:lan:0" "5:wan" "6@eth0"
+		;;
+	dlink,dwr-118-a2)
+		ucidef_add_switch "switch0" \
+			"1:lan:2" "2:lan:1" "3:lan:3" "4:lan" "0:wan" "6@eth0"
+		;;
+	psg1218b)
+		ucidef_add_switch "switch0" \
+			"0:lan:3" "1:lan:2" "2:lan:1" "3:wan" "6@eth0"
+		;;
+	whr-300hp2|\
+	whr-600d|\
+	wsr-1166|\
+	wsr-600)
+		ucidef_add_switch "switch0" \
+			"0:lan:1" "1:lan:2" "2:lan:3" "3:lan:4" "4:wan:5" "6@eth0"
+		;;
+	ar670w|\
+	ar725w|\
+	rakwireless,rak633|\
+	rt-ac51u)
+		ucidef_add_switch "switch0" \
+			"0:wan" "1:lan" "2:lan" "3:lan" "4:lan" "6t@eth0"
+		;;
+	belkin,f9k1109v1|\
+	rt-n15|\
+	wl-351)
+		ucidef_add_switch "switch0" \
+			"0:lan" "1:lan" "2:lan" "3:lan" "4:wan" "5@eth0"
+		;;
+	asl26555-8M|\
+	asl26555-16M|\
+	rp-n53)
+		ucidef_add_switch "switch0" \
+			"1:lan" "2:lan" "3:lan" "4:lan" "6t@eth0"
+		;;
+	asus,rt-ac57u|\
+	atp-52b|\
+	awm002-evb-4M|\
+	awm002-evb-8M|\
+	bdcom,wap2100-sk|\
+	dir-645|\
+	gl-mt300a|\
+	gl-mt300n|\
+	gl-mt750|\
+	hilink,hlk-7628n|\
+	hiwifi,hc5861b|\
+	jhr-n805r|\
+	jhr-n825r|\
+	jhr-n926r|\
+	mikrotik,rb750gr3|\
+	mzk-wdpr|\
+	rt-n14u|\
+	skylab,skw92a|\
+	tplink,c20-v4|\
+	tplink,c50-v3|\
+	tplink,c50-v4|\
+	tplink,tl-mr3420-v5|\
+	tplink,tl-wr842n-v5|\
+	tl-wr840n-v4|\
+	tl-wr840n-v5|\
+	tl-wr841n-v13|\
+	u7628-01-128M-16M|\
+	ubnt-erx|\
+	ubnt-erx-sfp|\
+	ur-326n4g|\
+	wrtnode|\
+	wrtnode2p | \
+	wrtnode2r | \
+	youhua,wr1200js|\
+	zbt-wa05|\
+	zyxel,keenetic-extra-ii)
+		ucidef_add_switch "switch0" \
+			"1:lan" "2:lan" "3:lan" "4:lan" "0:wan" "6@eth0"
+		;;
+	mikrotik,rbm33g)
+		ucidef_add_switch "switch0" \
+			"1:lan" "2:lan" "0:wan" "6@eth0"
+		;;
+	c20i|\
+	c50|\
+	tplink,c20-v1)
+		ucidef_add_switch "switch0" \
+			"1:lan:3" "2:lan:4" "3:lan:1" "4:lan:2" "0:wan" "6@eth0"
+		;;
+	dir-860l-b1|\
+	elecom,wrc-1167ghbk2-s|\
+	elecom,wrc-2533gst|\
+	elecom,wrc-1900gst|\
+	hg255d|\
+	iodata,wn-ax1167gr|\
+	iodata,wn-gx300gr)
+		ucidef_add_switch "switch0" \
+			"1:lan:4" "2:lan:3" "3:lan:2" "4:lan:1" "0:wan" "6@eth0"
+		;;
+	gnubee,gb-pc1|\
+	gnubee,gb-pc2)
+		ucidef_add_switch "switch0" \
+			"0:lan" "4:lan" "6@eth0"
+		;;
+	gl-mt300n-v2)
+		ucidef_add_switch "switch0" \
+			"1:lan" "0:wan" "6@eth0"
+		;;
+	awapn2403)
+		ucidef_add_switch "switch0" \
+			"0:lan" "1:wan" "6@eth0"
+		;;
+	b2c|\
+	nw718|\
+	psr-680w|\
+	sl-r7205|\
+	ur-336un|\
+	w502u|\
+	wr6202)
+		ucidef_set_interfaces_lan_wan "eth0.1" "eth0.2"
+		;;
+	br-6475nd)
+		ucidef_add_switch "switch0" \
+			"1:lan" "2:lan" "3:lan" "4:lan" "0:wan" "9@eth0"
+		;;
+	c108|\
+	cf-wr800n)
+		ucidef_add_switch "switch0" \
+			"4:lan" "6t@eth0"
+		;;
+	cudy,wr1000)
+		ucidef_add_switch "switch0" \
+			"2:lan:2" "3:lan:1" "4:wan" "6@eth0"
+		;;
+	cy-swr1100)
+		ucidef_add_switch "switch0" \
+			"0:lan" "1:lan" "2:lan" "3:lan" "4:wan" "9@eth0"
+		;;
+	duzun-dm06)
+		ucidef_add_switch "switch0" \
+			"1:lan" "0:wan" "6@eth0"
+		;;
+	e1700|\
+	mt7620a_mt7530)
+		ucidef_add_switch "switch1" \
+			"0:lan" "1:lan" "2:lan" "3:lan" "4:wan" "6@eth0"
+		;;
+	edimax,br-6478ac-v2|\
+	tplink,c2-v1)
+		ucidef_add_switch "switch1" \
+			"1:lan" "2:lan" "3:lan" "4:lan" "0:wan" "6@eth0"
+		;;
+	hc5661|\
+	head-weblink,hdrm200|\
+	y1s)
+		ucidef_add_switch "switch0" \
+			"1:lan" "2:lan" "3:lan" "4:lan" "5:lan" "0:wan" "6@eth0"
+		;;
+	hc5861)
+		ucidef_add_switch "switch0" \
+			"0:lan" "1:lan" "5:wan" "6@eth0"
+		;;
+	hc5962)
+		ucidef_add_switch "switch0" \
+			"1:lan" "2:lan" "3:lan" "4:wan" "6@eth0"
+		;;
+	iodata,wn-ac1167gr|\
+	iodata,wn-ac733gr3)
+		ucidef_add_switch "switch1" \
+			"1:lan:4" "2:lan:3" "3:lan:2" "4:lan:1" "0:wan" "6@eth0"
+		;;
+	kn_rf)
+		ucidef_add_switch "switch0" \
+			"0:wan" "1:lan" "2:lan" "3:lan" "4:lan" "6@eth0"
+		;;
+	kng_rc)
+		ucidef_add_switch "switch1" \
+			"0:lan" "1:lan" "2:lan" "3:lan" "4:wan" "7t@eth0"
+		;;
+	miwifi-mini|\
+	y1|\
+	zbtlink,zbt-we1226)
+		ucidef_add_switch "switch0" \
+			"0:lan:2" "1:lan:1" "4:wan" "6@eth0"
+		;;
+	mlwg2|\
+	wizard8800|\
+	wl-330n)
+		ucidef_set_interface_lan "eth0.1"
+		;;
+	mr200)
+		ucidef_add_switch "switch0" \
+			"0:lan" "1:lan" "2:lan" "3:lan" "6t@eth0"
+		ucidef_set_interface_wan "usb0"
+		;;
+	hc5761)
+		ucidef_add_switch "switch0" \
+			"1:lan" "4:lan" "0:wan" "6@eth0"
+		;;
+	mzk-dp150n|\
+	vocore-8M|\
+	vocore-16M)
+		ucidef_add_switch "switch0" \
+			"0:lan" "4:lan" "6t@eth0"
+		;;
+	newifi-d1)
+		ucidef_add_switch "switch0" \
+		"1:lan:2" "2:lan:1" "4:wan" "6@eth0"
+		;;
+	phicomm,k2g)
+		ucidef_add_switch "switch0" \
+			"0:lan:4" "1:lan:3" "2:lan:2" "3:lan:1" "5:wan" "6@eth0"
+		;;
+	dlink,dir-510l|\
+	glinet,vixmini|\
+	netgear,ex6150|\
+	re350-v1)
+		ucidef_add_switch "switch0" \
+			"0:lan" "6@eth0"
+		;;
+	re6500)
+		ucidef_add_switch "switch0" \
+			"0:lan:1" "1:lan:2" "2:lan:3" "3:lan:4" "6@eth0"
+		;;
+	rt-n56u)
+		ucidef_add_switch "switch0" \
+			"0:lan" "1:lan" "2:lan" "3:lan" "4:wan" "8@eth0"
+		;;
+	tew-638apb-v2)
+		ucidef_add_switch "switch0" \
+			"4:lan" "6@eth0"
+		;;
+	lava,lr-25g001|\
+	tew-691gr|\
+	tew-692gr|\
+	wlr-6000)
+		ucidef_add_switch "switch0" \
+			"1:lan" "2:lan" "3:lan" "4:lan" "5:wan" "0@eth0"
+		;;
+	tplink,tl-wr902ac-v3)
+		ucidef_add_switch "switch0" \
+			"4:lan" "6@eth0"
+		;;
+	vonets,var11n-300|\
+	wt1520-4M|\
+	wt1520-8M)
+		ucidef_add_switch "switch0" \
+			"0:lan" "4:wan" "6@eth0"
+		;;
+	vocore2|\
+	vocore2lite)
+		ucidef_add_switch "switch0" \
+			"0:lan" "2:lan" "6t@eth0"
+		;;
+	f5d8235-v1|\
+	f5d8235-v2|\
+	tew-714tru|\
+	v11st-fe|\
+	wzr-agl300nh)
+		ucidef_add_switch "switch0" \
+			"1:lan" "2:lan" "3:lan" "4:lan" "0:wan" "5@eth0"
+		;;
+	wcr-150gn|\
+	we1026-5g-16m)
+		ucidef_add_switch "switch0" \
+			"0:lan" "6t@eth0"
+		;;
+	whr-1166d)
+		ucidef_add_switch "switch0" \
+			"0:lan" "1:lan" "2:lan" "3:lan" "5:wan" "6@eth0"
+		;;
+	wizfi630a)
+		ucidef_add_switch "switch0" \
+			"0:lan" "1:lan" "2:wan" "6@eth0"
+		;;
+	wiznet,wizfi630s)
+		ucidef_add_switch "switch0" \
+			"0:wan" "3:lan" "4:lan" "6@eth0"
+		;;
+	wt3020-4M|\
+	wt3020-8M|\
+	wt3020-16M)
+		ucidef_add_switch "switch0" \
+			"4:lan" "0:wan" "6@eth0"
+		;;
+	xiaomi,mir3g)
+		ucidef_add_switch "switch0" \
+			"2:lan:2" "3:lan:1" "1:wan" "6t@eth0"
+		;;
+	xiaomi,mir3p)
+		ucidef_add_switch "switch0" \
+			"1:lan:3" "2:lan:2" "3:lan:1" "4:wan" "6@eth0"
+		;;
+	xiaomi,mir4a-100m)
+		ucidef_add_switch "switch0" \
+			"4:lan:1" "2:lan:2" "0:wan" "6@eth0"
+		;;
+	zyxel,keenetic-start)
+		ucidef_add_switch "switch0" \
+			"0:lan:3" "1:lan:2" "2:lan:1" "3:lan:0" "4:wan" "6@eth0"
+		;;
+	*)
+		RT3X5X=`cat /proc/cpuinfo | egrep "(RT3.5|RT5350)"`
+		if [ -n "${RT3X5X}" ]; then
+			ramips_setup_rt3x5x_vlans
+		else
+			ucidef_set_interfaces_lan_wan "eth0.1" "eth0.2"
+		fi
+		;;
+	esac
+}
 
-define Kernel/SetNoInitramfs
-	mv $(LINUX_DIR)/.config.set $(LINUX_DIR)/.config.old
-	grep -v INITRAMFS $(LINUX_DIR)/.config.old > $(LINUX_DIR)/.config.set
-	echo 'CONFIG_INITRAMFS_SOURCE=""' >> $(LINUX_DIR)/.config.set
-	echo '# CONFIG_INITRAMFS_FORCE is not set' >> $(LINUX_DIR)/.config.set
-endef
+ramips_setup_macs()
+{
+	local board="$1"
+	local lan_mac=""
+	local wan_mac=""
 
-define Kernel/Configure/Default
-	rm -f $(LINUX_DIR)/localversion
-	$(LINUX_CONF_CMD) > $(LINUX_DIR)/.config.target
-# copy CONFIG_KERNEL_* settings over to .config.target
-	awk '/^(#[[:space:]]+)?CONFIG_KERNEL/{sub("CONFIG_KERNEL_","CONFIG_");print}' $(TOPDIR)/.config >> $(LINUX_DIR)/.config.target
-	echo "# CONFIG_KALLSYMS_EXTRA_PASS is not set" >> $(LINUX_DIR)/.config.target
-	echo "# CONFIG_KALLSYMS_ALL is not set" >> $(LINUX_DIR)/.config.target
-	echo "CONFIG_KALLSYMS_UNCOMPRESSED=y" >> $(LINUX_DIR)/.config.target
-	$(SCRIPT_DIR)/package-metadata.pl kconfig $(TMP_DIR)/.packageinfo $(TOPDIR)/.config $(KERNEL_PATCHVER) > $(LINUX_DIR)/.config.override
-	$(SCRIPT_DIR)/kconfig.pl 'm+' '+' $(LINUX_DIR)/.config.target /dev/null $(LINUX_DIR)/.config.override > $(LINUX_DIR)/.config.set
-	$(call Kernel/SetNoInitramfs)
-	rm -rf $(KERNEL_BUILD_DIR)/modules
-	cmp -s $(LINUX_DIR)/.config.set $(LINUX_DIR)/.config.prev || { \
-		cp $(LINUX_DIR)/.config.set $(LINUX_DIR)/.config; \
-		cp $(LINUX_DIR)/.config.set $(LINUX_DIR)/.config.prev; \
-	}
-	$(_SINGLE) [ -d $(LINUX_DIR)/user_headers ] || $(KERNEL_MAKE) INSTALL_HDR_PATH=$(LINUX_DIR)/user_headers headers_install
-	grep '=[ym]' $(LINUX_DIR)/.config.set | LC_ALL=C sort | echo "18384755d38fc43c447d83d4a3e07054" > $(LINUX_DIR)/.vermagic
-endef
+	case $board in
+	a5-v11|\
+	ht-tm02|\
+	wmdr-143n)
+		lan_mac=$(cat /sys/class/net/eth0/address)
+		;;
+	asus,rt-ac57u|\
+	vr500)
+		lan_mac=$(mtd_get_mac_binary factory 57344)
+		wan_mac=$(mtd_get_mac_binary factory 57350)
+		;;
+	alfa-network,quad-e4g|\
+	elecom,wrc-1167ghbk2-s|\
+	elecom,wrc-2533gst|\
+	elecom,wrc-1900gst|\
+	sk-wb8)
+		wan_mac=$(mtd_get_mac_binary factory 57350)
+		;;
+	alfa-network,r36m-e4g|\
+	carambola|\
+	freestation5|\
+	w502u|\
+	wnce2001)
+		wan_mac=$(mtd_get_mac_binary factory 46)
+		;;
+	bc2|\
+	broadway|\
+	d105|\
+	dir-300-b7|\
+	dir-320-b1|\
+	dir-620-a1|\
+	esr-9753|\
+	hilink,hlk-7628n|\
+	hlk-rm04|\
+	mpr-a1|\
+	psr-680w|\
+	sl-r7205|\
+	y1|\
+	y1s)
+		lan_mac=$(cat /sys/class/net/eth0/address)
+		lan_mac=$(macaddr_setbit_la "$lan_mac")
+		wan_mac=$(macaddr_add "$lan_mac" 1)
+		;;
+	belkin,f9k1109v1)
+		wan_mac=$(mtd_get_mac_ascii uboot-env HW_WAN_MAC)
+		lan_mac=$(mtd_get_mac_ascii uboot-env HW_LAN_MAC)
+		;;
+	br-6475nd)
+		lan_mac=$(cat /sys/class/net/eth0/address)
+		wan_mac=$(mtd_get_mac_binary devdata 7)
+		;;
+	cy-swr1100|\
+	dir-645)
+		lan_mac=$(mtd_get_mac_ascii nvram lanmac)
+		wan_mac=$(mtd_get_mac_ascii nvram wanmac)
+		;;
+	dch-m225)
+		lan_mac=$(mtd_get_mac_ascii factory lanmac)
+		;;
+	dir-860l-b1)
+		lan_mac=$(mtd_get_mac_ascii factory lanmac)
+		wan_mac=$(mtd_get_mac_ascii factory wanmac)
+		;;
+	dlink,dir-510l|\
+	dlink,dwr-116-a1|\
+	dlink,dwr-118-a1|\
+	dlink,dwr-118-a2|\
+	dlink,dwr-921-c1|\
+	dlink,dwr-922-e2|\
+	lava,lr-25g001)
+		wan_mac=$(jboot_config_read -m -i $(find_mtd_part "config") -o 0xE000)
+		lan_mac=$(macaddr_add "$wan_mac" 1)
+		;;
+	e1700)
+		wan_mac=$(mtd_get_mac_ascii config WAN_MAC_ADDR)
+		;;
+	edimax,br-6478ac-v2|\
+	netgear,r6350)
+		lan_mac=$(cat /sys/class/net/eth0/address)
+		wan_mac=$(macaddr_add "$lan_mac" 2)
+		;;
+	gl-mt300n-v2|\
+	whr-g300n)
+		wan_mac=$(mtd_get_mac_binary factory 4)
+		;;
+	hc5*61|\
+	hc5661a|\
+	hc5962|\
+	hiwifi,hc5861b)
+		lan_mac=`mtd_get_mac_ascii bdinfo "Vfac_mac "`
+		[ -n "$lan_mac" ] || lan_mac=$(cat /sys/class/net/eth0/address)
+		wan_mac=$(macaddr_add "$lan_mac" 1)
+		;;
+	iodata,wn-ac1167gr|\
+	iodata,wn-ac733gr3)
+		wan_mac=$(macaddr_add "$(mtd_get_mac_binary Factory 4)" -1)
+		;;
+	iodata,wn-ax1167gr|\
+	iodata,wn-gx300gr)
+		wan_mac=$(macaddr_add "$(mtd_get_mac_binary Factory 4)" 1)
+		;;
+	kn_rc|\
+	kn_rf|\
+	kng_rc)
+		wan_mac=$(mtd_get_mac_binary factory 40)
+		;;
+	linkits7688)
+		wan_mac=$(mtd_get_mac_binary factory 4)
+		lan_mac=$(mtd_get_mac_binary factory 46)
+		;;
+	mac1200rv2)
+		lan_mac=$(mtd_get_mac_binary factory_info 13)
+		wan_mac=$(macaddr_add "$lan_mac" 1)
+		;;
+	miwifi-mini)
+		wan_mac=$(cat /sys/class/net/eth0/address)
+		lan_mac=$(macaddr_setbit_la "$wan_mac")
+		;;
+	m3|\
+	m4-4M|\
+	m4-8M|\
+	x5|\
+	x8)
+		lan_mac=$(cat /sys/class/net/eth0/address)
+		lan_mac=$(macaddr_add "$lan_mac" -2)
+		;;
+	newifi-d1)
+		lan_mac=$(cat /sys/class/net/eth0/address)
+		lan_mac=$(macaddr_add "$lan_mac" 2)
+		;;
+	omega2|\
+	omega2p)
+		wan_mac=$(mtd_get_mac_binary factory 4)
+		lan_mac=$(mtd_get_mac_binary factory 46)
+		;;
+	oy-0001|\
+	phicomm,k2g)
+		lan_mac=$(mtd_get_mac_binary factory 40)
+		wan_mac=$(mtd_get_mac_binary factory 46)
+		;;
+	rt-n56u)
+		lan_mac=$(cat /sys/class/net/eth0/address)
+		lan_mac=$(macaddr_setbit_la "$lan_mac")
+		wan_mac=$(mtd_get_mac_binary factory 32772)
+		;;
+	skylab,skw92a)
+		lan_mac=$(mtd_get_mac_binary factory 40)
+		wan_mac=$(mtd_get_mac_binary factory 46)
+		;;
+	tew-691gr)
+		wan_mac=$(macaddr_add "$(mtd_get_mac_binary factory 4)" 3)
+		;;
+	tew-692gr)
+		wan_mac=$(macaddr_add "$(mtd_get_mac_binary factory 4)" 1)
+		;;
+	tiny-ac)
+		lan_mac=$(mtd_get_mac_ascii u-boot-env LAN_MAC_ADDR)
+		wan_mac=$(mtd_get_mac_ascii u-boot-env WAN_MAC_ADDR)
+		;;
+	w306r-v20)
+		lan_mac=$(cat /sys/class/net/eth0/address)
+		wan_mac=$(macaddr_add "$lan_mac" 5)
+		;;
+	wcr-1166ds|\
+	wsr-1166)
+		local index="$(find_mtd_index "board_data")"
+		wan_mac="$(grep -m1 mac= "/dev/mtd${index}" | cut -d= -f2)"
+		lan_mac=$wan_mac
+		;;
+	wcr-150gn)
+		wan_mac=$(mtd_get_mac_binary factory 40)
+		;;
+	whr-1166d|\
+	whr-300hp2|\
+	whr-600d|\
+	wsr-600)
+		wan_mac=$(mtd_get_mac_binary factory 4)
+		lan_mac=$wan_mac
+		;;
+	wizfi630a)
+		lan_mac=$(mtd_get_mac_binary factory 4)
+		wan_mac=$(mtd_get_mac_binary factory 40)
+		;;
+	wlr-6000)
+		wan_mac=$(macaddr_add "$(mtd_get_mac_binary factory 32772)" 2)
+		;;
+	xiaomi,mir3g|\
+	xiaomi,mir3p)
+		lan_mac=$(mtd_get_mac_binary Factory 0xe006)
+		;;
+	zyxel,keenetic-start)
+		wan_mac=$(mtd_get_mac_binary factory 40)
+		;;
+	*)
+		lan_mac=$(cat /sys/class/net/eth0/address)
+		wan_mac=$(macaddr_add "$lan_mac" 1)
+		;;
+	esac
 
-define Kernel/Configure/Initramfs
-	$(call Kernel/SetInitramfs)
-endef
+	[ -n "$lan_mac" ] && ucidef_set_interface_macaddr "lan" $lan_mac
+	[ -n "$wan_mac" ] && ucidef_set_interface_macaddr "wan" $wan_mac
+}
 
-define Kernel/CompileModules/Default
-	rm -f $(LINUX_DIR)/vmlinux $(LINUX_DIR)/System.map
-	+$(KERNEL_MAKE) modules
-endef
+board_config_update
+board=$(board_name)
+ramips_setup_interfaces $board
+ramips_setup_macs $board
+board_config_flush
 
-OBJCOPY_STRIP = -R .reginfo -R .notes -R .note -R .comment -R .mdebug -R .note.gnu.build-id
-
-# AMD64 shares the location with x86
-ifeq ($(LINUX_KARCH),x86_64)
-IMAGES_DIR:=../../x86/boot
-endif
-
-define Kernel/CopyImage
-	cmp -s $(LINUX_DIR)/vmlinux $(KERNEL_BUILD_DIR)/vmlinux$(1).debug || { \
-		$(KERNEL_CROSS)objcopy -O binary $(OBJCOPY_STRIP) -S $(LINUX_DIR)/vmlinux $(LINUX_KERNEL)$(1); \
-		$(KERNEL_CROSS)objcopy $(OBJCOPY_STRIP) -S $(LINUX_DIR)/vmlinux $(KERNEL_BUILD_DIR)/vmlinux$(1).elf; \
-		$(CP) $(LINUX_DIR)/vmlinux $(KERNEL_BUILD_DIR)/vmlinux$(1).debug; \
-		$(foreach k, \
-			$(if $(KERNEL_IMAGES),$(KERNEL_IMAGES),$(filter-out vmlinux dtbs,$(KERNELNAME))), \
-			$(CP) $(LINUX_DIR)/arch/$(LINUX_KARCH)/boot/$(IMAGES_DIR)/$(k) $(KERNEL_BUILD_DIR)/$(k)$(1); \
-		) \
-	}
-endef
-
-define Kernel/CompileImage/Default
-	rm -f $(TARGET_DIR)/init
-	+$(KERNEL_MAKE) $(if $(KERNELNAME),$(KERNELNAME),all) modules
-	$(call Kernel/CopyImage)
-endef
-
-ifneq ($(CONFIG_TARGET_ROOTFS_INITRAMFS),)
-define Kernel/CompileImage/Initramfs
-	$(call Kernel/Configure/Initramfs)
-	$(CP) $(GENERIC_PLATFORM_DIR)/other-files/init $(TARGET_DIR)/init
-	rm -rf $(KERNEL_BUILD_DIR)/linux-$(LINUX_VERSION)/usr/initramfs_data.cpio*
-	+$(KERNEL_MAKE) $(if $(KERNELNAME),$(KERNELNAME),all) modules
-	$(call Kernel/CopyImage,-initramfs)
-endef
-else
-define Kernel/CompileImage/Initramfs
-endef
-endif
-
-define Kernel/Clean/Default
-	rm -f $(KERNEL_BUILD_DIR)/linux-$(LINUX_VERSION)/.configured
-	rm -f $(LINUX_KERNEL)
-	$(_SINGLE)$(MAKE) -C $(KERNEL_BUILD_DIR)/linux-$(LINUX_VERSION) clean
-endef
-
-
+exit 0
